@@ -1,0 +1,56 @@
+@import url('https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html {
+    @apply bg-paper text-ink;
+  }
+  body {
+    @apply font-sans antialiased text-ink;
+    font-feature-settings: "ss01", "cv11";
+  }
+  ::selection {
+    @apply bg-ink text-paper;
+  }
+}
+
+@layer components {
+  .label {
+    @apply font-mono text-[10px] uppercase tracking-widest text-muted;
+  }
+  .label-ink {
+    @apply font-mono text-[10px] uppercase tracking-widest text-ink;
+  }
+  .display {
+    @apply font-display tracking-tight;
+  }
+  .rule {
+    @apply border-ink;
+  }
+  .field-input {
+    @apply w-full bg-transparent border-0 border-b border-ink/40 px-0 py-2 text-base text-ink placeholder:text-muted focus:outline-none focus:border-ink transition-colors;
+  }
+  .chip {
+    @apply inline-flex items-center font-mono text-[10px] uppercase tracking-widest px-2 py-1 border border-ink;
+  }
+  .chip-active {
+    @apply bg-ink text-paper;
+  }
+  .chip-inactive {
+    @apply bg-transparent text-ink hover:bg-ink hover:text-paper transition-colors;
+  }
+  .btn-primary {
+    @apply font-mono text-xs uppercase tracking-widest bg-ink text-paper px-6 py-3 hover:bg-accent transition-colors;
+  }
+  .btn-ghost {
+    @apply font-mono text-xs uppercase tracking-widest border border-ink text-ink px-4 py-2 hover:bg-ink hover:text-paper transition-colors;
+  }
+}
+
+@media print {
+  .no-print { display: none !important; }
+  body { background: white; }
+}
