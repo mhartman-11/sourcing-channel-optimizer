@@ -54,3 +54,19 @@
   .no-print { display: none !important; }
   body { background: white; }
 }
+
+/* Accessibility + interaction polish (applies to the inline-styled app shell) */
+*:focus-visible {
+  outline: 2px solid #C5533A;
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+button, a, input, select, textarea { font-family: inherit; }
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+@keyframes sco-spin { to { transform: rotate(360deg); } }
+@keyframes sco-pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.45; } }
