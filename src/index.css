@@ -70,3 +70,30 @@ button, a, input, select, textarea { font-family: inherit; }
 }
 @keyframes sco-spin { to { transform: rotate(360deg); } }
 @keyframes sco-pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.45; } }
+@keyframes sco-rise {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* Inline-styled shell can't express :hover — these classes layer interaction on top. */
+.sco-card {
+  box-shadow: 0 1px 2px rgba(24, 18, 14, 0.04);
+  transition: box-shadow 0.25s cubic-bezier(0.22, 1, 0.36, 1),
+              transform 0.25s cubic-bezier(0.22, 1, 0.36, 1),
+              border-color 0.25s ease;
+}
+.sco-card-hover:hover {
+  box-shadow: 0 12px 30px rgba(28, 51, 41, 0.12);
+  transform: translateY(-3px);
+  border-color: #C7BBAE;
+}
+.sco-btn:hover:not(:disabled) { filter: brightness(0.93); }
+.sco-btn-ghost:hover:not(:disabled) { background: #EDE6DC !important; }
+.sco-tab:hover { color: #1C3329 !important; }
+.sco-rise { animation: sco-rise 0.4s cubic-bezier(0.22, 1, 0.36, 1) both; }
+.sco-link-underline { position: relative; }
+.sco-link-underline::after {
+  content: ''; position: absolute; left: 0; bottom: -2px; width: 0; height: 1px;
+  background: currentColor; transition: width 0.25s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.sco-link-underline:hover::after { width: 100%; }

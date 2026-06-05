@@ -75,3 +75,39 @@ export function exportCsv(list: SavedCandidate[]): void {
 export function exportJson(list: SavedCandidate[]): void {
   download(JSON.stringify(list, null, 2), 'application/json', 'json');
 }
+
+/* ---------------- Saved Searches ---------------- */
+
+export interface SavedSearch {
+  id: string;
+  name: string;
+  query: Record<string, unknown>;
+  sources: string[];
+  createdAt: string;
+}
+
+const SEARCHES_KEY = 'sco_saved_searches_v1';
+
+export function loadSavedSearches(): SavedSearch[] {
+  try {
+    return JSON.parse(localStorage.getItem(SEARCHES_KEY) || '[]');
+  } catch {
+    return [];
+  }
+}
+
+export function saveSearch(name: string, query: Record<string, unknown>, sources: string[]): SavedSearch[] {
+  const list = loadSavedSearches();
+  const next: SavedSearch[] = [
+    { id: Date.now().toString(), name, query, sources, createdAt: new Date().toISOString() },
+    ...list,
+  ].slice(0, 12);
+  localStorage.setItem(SEARCHES_KEY, JSON.stringify(next));
+  return next;
+}
+
+export function deleteSavedSearch(id: string): SavedSearch[] {
+  const next = loadSavedSearches().filter((s) => s.id !== id);
+  localStorage.setItem(SEARCHES_KEY, JSON.stringify(next));
+  return next;
+}

@@ -19,6 +19,7 @@ function buildQuery(q: SearchQuery): string {
   if (q.keywords.trim()) parts.push(q.keywords.trim());
   if (q.location.trim()) parts.push(`location:"${q.location.trim()}"`);
   if (q.tech.trim()) parts.push(`language:${q.tech.trim()}`);
+  if (q.orgName?.trim()) parts.push(`org:${q.orgName.trim()}`);
   if (q.minSignal > 0) parts.push(`followers:>=${q.minSignal}`);
   return parts.join(' ') || 'followers:>=50';
 }

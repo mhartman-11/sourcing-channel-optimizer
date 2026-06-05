@@ -1,30 +1,87 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { brand } from './theme';
 import { searchSources, SOURCES, type SourceOutcome } from './lib/sources';
 import type { Candidate, SearchQuery, SourceId } from './lib/types';
 import { buildBoolean, buildDeepLinks, type XRayInput } from './lib/xray';
 import { rankChannels, ROLE_FAMILIES, SENIORITIES, type RoleFamily, type Seniority } from './lib/channels';
 import {
+  deleteSavedSearch,
   exportCsv,
   exportJson,
   isSaved,
   loadPipeline,
+  loadSavedSearches,
+  saveSearch,
   STAGES,
   toggleSave,
   updateSaved,
   type SavedCandidate,
+  type SavedSearch,
   type Stage,
 } from './lib/storage';
+import { generateOutreach, subjectLine } from './lib/outreach';
 
 type Tab = 'sourcing' | 'xray' | 'channels' | 'pipeline';
 
 const f = "'Inter', system-ui, -apple-system, sans-serif";
+const serif = "'Instrument Serif', Georgia, serif";
+const mono = "'JetBrains Mono', ui-monospace, monospace";
 
 const card: React.CSSProperties = {
   background: brand.surface,
   border: `1px solid ${brand.border}`,
   borderRadius: 14,
   padding: 20,
+};
+
+/* Which live sources suit technical vs. all-role hiring. Drives the grouped picker. */
+const SOURCE_GROUPS: { label: string; note: string; ids: SourceId[] }[] = [
+  {
+    label: 'Technical roles',
+    note: 'Engineers, data & ML — people who build in public.',
+    ids: ['github', 'stackoverflow', 'hackernews', 'devto'],
+  },
+  {
+    label: 'All roles',
+    note: 'Design, marketing, writing, ops, sales & dev — anyone posting "available for hire".',
+    ids: ['reddit'],
+  },
+];
+
+/* Per-tab "how to use it" copy. Rendered as the intro panel on each tab. */
+const TAB_GUIDE: Record<Tab, { purpose: string; steps: string[] }> = {
+  sourcing: {
+    purpose: 'Pull real, public candidate profiles from live sources. No login, no API keys, no cost.',
+    steps: [
+      'Pick your sources — technical sites for engineers, or "All roles" for everyone else.',
+      'Enter keywords or skills, and optionally a location, technology, or company.',
+      'Hit Source candidates, then expand a profile, save it to your pipeline, or generate outreach.',
+    ],
+  },
+  xray: {
+    purpose: 'Build a Boolean search string and ready-made search links to find candidates on LinkedIn and the open web. Works for any role.',
+    steps: [
+      'Enter the job titles, must-have skills, and location you are hiring for.',
+      'Copy the Boolean string, or click a search link to run it on Google, LinkedIn, or GitHub.',
+      'No Recruiter seat needed — these reach public profiles for free.',
+    ],
+  },
+  channels: {
+    purpose: 'Compare sourcing channels and see which gives the best return for a specific role and seniority.',
+    steps: [
+      'Choose the role family and seniority you are hiring for.',
+      'Set your priorities — drag the sliders for quality, speed, cost, and reach.',
+      'Read the ranked list: higher fit score means a better channel for this hire.',
+    ],
+  },
+  pipeline: {
+    purpose: 'Your saved shortlist. Track every candidate by stage and export the list when you are ready.',
+    steps: [
+      'Save candidates from the Live Sourcing tab to build your shortlist.',
+      'Move each person through stages and add notes on fit or next steps.',
+      'Export the whole pipeline to CSV or JSON anytime.',
+    ],
+  },
 };
 
 /* ---------------- Primitives ---------------- */
@@ -130,14 +187,15 @@ function Btn({
     minHeight: 44,
     transition: 'background 0.2s, opacity 0.2s',
   };
+  const cls = `sco-btn${variant === 'ghost' ? ' sco-btn-ghost' : ''}`;
   if (href)
     return (
-      <a href={href} target="_blank" rel="noreferrer" style={s} aria-label={ariaLabel}>
+      <a href={href} target="_blank" rel="noreferrer" style={s} aria-label={ariaLabel} className={cls}>
         {children}
       </a>
     );
   return (
-    <button onClick={onClick} disabled={disabled} style={s} aria-label={ariaLabel}>
+    <button onClick={onClick} disabled={disabled} style={s} aria-label={ariaLabel} className={cls}>
       {children}
     </button>
   );
@@ -148,13 +206,235 @@ const sourceColor: Record<SourceId, string> = {
   stackoverflow: '#C5533A',
   hackernews: '#2E5243',
   devto: '#4A3F35',
+  reddit: '#7B3F1E',
 };
+
+/* Small uppercase eyebrow label used to title sections. */
+function SectionLabel({ children, color = brand.textMuted }: { children: React.ReactNode; color?: string }) {
+  return (
+    <div style={{ fontFamily: mono, fontSize: 11, fontWeight: 600, letterSpacing: '0.14em', textTransform: 'uppercase', color }}>
+      {children}
+    </div>
+  );
+}
+
+/* "How to use this tab" intro panel. Purpose line + numbered steps. */
+function TabIntro({ title, guide }: { title: string; guide: { purpose: string; steps: string[] } }) {
+  return (
+    <div
+      className="sco-rise"
+      style={{
+        background: brand.primaryLight,
+        border: `1px solid ${brand.border}`,
+        borderRadius: 16,
+        padding: '22px 24px',
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 16,
+      }}
+    >
+      <div>
+        <SectionLabel color={brand.primaryMid}>How to use this</SectionLabel>
+        <div style={{ fontFamily: serif, fontSize: 26, lineHeight: 1.1, color: brand.primary, marginTop: 6 }}>{title}</div>
+        <div style={{ fontSize: 14, color: brand.textMid, lineHeight: 1.55, marginTop: 8, maxWidth: '68ch' }}>{guide.purpose}</div>
+      </div>
+      <ol style={{ display: 'flex', flexDirection: 'column', gap: 10, margin: 0, padding: 0, listStyle: 'none' }}>
+        {guide.steps.map((s, i) => (
+          <li key={i} style={{ display: 'flex', gap: 12, alignItems: 'flex-start', fontSize: 14, color: brand.textMid, lineHeight: 1.5 }}>
+            <span
+              style={{
+                flexShrink: 0,
+                width: 24,
+                height: 24,
+                borderRadius: 8,
+                background: brand.primary,
+                color: '#fff',
+                fontSize: 13,
+                fontWeight: 700,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                fontFamily: mono,
+              }}
+            >
+              {i + 1}
+            </span>
+            <span style={{ paddingTop: 2 }}>{s}</span>
+          </li>
+        ))}
+      </ol>
+    </div>
+  );
+}
+
+/* ---------------- Candidate Modal ---------------- */
+
+interface OutreachSettings {
+  senderName: string;
+  role: string;
+  company: string;
+}
+
+function CandidateModal({
+  c,
+  saved,
+  onToggle,
+  onClose,
+  outreach,
+  setOutreach,
+}: {
+  c: Candidate;
+  saved: boolean;
+  onToggle: (c: Candidate) => void;
+  onClose: () => void;
+  outreach: OutreachSettings;
+  setOutreach: (o: OutreachSettings) => void;
+}) {
+  const [copiedMsg, setCopiedMsg] = useState(false);
+  const [copiedSubject, setCopiedSubject] = useState(false);
+  const backdropRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [onClose]);
+
+  const msg = generateOutreach(c, outreach);
+  const subject = subjectLine(c, outreach.role || 'this role');
+
+  function copy(text: string, setCopied: (v: boolean) => void) {
+    navigator.clipboard.writeText(text);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1800);
+  }
+
+  return (
+    <div
+      ref={backdropRef}
+      onClick={(e) => { if (e.target === backdropRef.current) onClose(); }}
+      style={{
+        position: 'fixed', inset: 0, background: 'rgba(28,51,41,0.55)', zIndex: 1000,
+        display: 'flex', alignItems: 'flex-start', justifyContent: 'center',
+        padding: '24px 16px', overflowY: 'auto',
+      }}
+      role="dialog"
+      aria-modal="true"
+      aria-label={`${c.name} profile`}
+    >
+      <div style={{ background: brand.surface, borderRadius: 18, width: '100%', maxWidth: 680, padding: 28, display: 'flex', flexDirection: 'column', gap: 20, position: 'relative', boxShadow: '0 24px 64px rgba(0,0,0,0.18)' }}>
+        <button
+          onClick={onClose}
+          aria-label="Close"
+          style={{ position: 'absolute', top: 16, right: 16, background: brand.bgAlt, border: 'none', borderRadius: 8, width: 32, height: 32, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', color: brand.textMuted }}
+        >
+          <Icon name="x" size={16} color={brand.textMuted} />
+        </button>
+
+        {/* Header */}
+        <div style={{ display: 'flex', gap: 16, alignItems: 'center' }}>
+          {c.avatar
+            ? <img src={c.avatar} alt="" width={72} height={72} style={{ borderRadius: 16, border: `2px solid ${brand.border}` }} />
+            : <div style={{ width: 72, height: 72, borderRadius: 16, background: sourceColor[c.source], color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 800, fontSize: 28 }}>{c.name.charAt(0).toUpperCase()}</div>
+          }
+          <div style={{ flex: 1 }}>
+            <div style={{ fontWeight: 800, fontSize: 22, color: brand.text }}>{c.name}</div>
+            <div style={{ color: brand.textFaint, fontSize: 14, marginTop: 2 }}>@{c.handle}{c.location ? ` · ${c.location}` : ''}{c.company ? ` · ${c.company}` : ''}</div>
+            <div style={{ display: 'flex', gap: 8, marginTop: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+              {chip(SOURCES.find((s) => s.meta.id === c.source)!.meta.label, sourceColor[c.source], '#fff')}
+              <span style={{ fontWeight: 800, fontSize: 18, color: brand.primary }}>{c.matchScore}</span>
+              <span style={{ fontSize: 11, color: brand.textFaint, fontWeight: 700 }}>MATCH</span>
+            </div>
+          </div>
+        </div>
+
+        {/* Bio */}
+        {c.bio && (
+          <div style={{ fontSize: 14, color: brand.textMid, lineHeight: 1.6, whiteSpace: 'pre-wrap', wordBreak: 'break-word', background: brand.bgCreamWarm, borderRadius: 10, padding: '12px 14px' }}>
+            {c.bio}
+          </div>
+        )}
+
+        {/* Tags + Metrics */}
+        {c.tags.length > 0 && (
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+            {c.tags.map((t, i) => chip(t, brand.primaryLight, brand.primary, `${c.uid}-m${i}`))}
+          </div>
+        )}
+        {c.metrics.length > 0 && (
+          <div style={{ display: 'flex', gap: 18, fontSize: 13, color: brand.textFaint, flexWrap: 'wrap' }}>
+            {c.metrics.map((m) => <span key={m.label}><strong style={{ color: brand.text }}>{m.value}</strong> {m.label}</span>)}
+          </div>
+        )}
+
+        {/* Contact */}
+        <ContactRow c={c} />
+
+        {/* Actions */}
+        <div style={{ display: 'flex', gap: 10 }}>
+          <Btn href={c.url} variant="ghost" ariaLabel={`View ${c.name} profile`}>
+            <Icon name="external" size={14} color={brand.primary} /> View profile
+          </Btn>
+          <Btn onClick={() => onToggle(c)} variant={saved ? 'accent' : 'primary'}>
+            <Icon name={saved ? 'check' : 'bookmark'} size={14} color="#fff" /> {saved ? 'Saved' : 'Save to pipeline'}
+          </Btn>
+        </div>
+
+        {/* Outreach generator */}
+        <div style={{ borderTop: `1px solid ${brand.border}`, paddingTop: 20 }}>
+          <div style={{ fontSize: 12, fontWeight: 800, color: brand.textMuted, letterSpacing: 0.5, marginBottom: 14 }}>OUTREACH GENERATOR</div>
+          <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginBottom: 14 }}>
+            <Field label="Your name">
+              <input id="outreach-name" style={{ ...inputStyle, minWidth: 140 }} value={outreach.senderName} onChange={(e) => setOutreach({ ...outreach, senderName: e.target.value })} placeholder="Alex Chen" />
+            </Field>
+            <Field label="Role you're hiring for">
+              <input id="outreach-role" style={{ ...inputStyle, minWidth: 180 }} value={outreach.role} onChange={(e) => setOutreach({ ...outreach, role: e.target.value })} placeholder="Senior React Engineer" />
+            </Field>
+            <Field label="Company">
+              <input id="outreach-company" style={{ ...inputStyle, minWidth: 140 }} value={outreach.company} onChange={(e) => setOutreach({ ...outreach, company: e.target.value })} placeholder="Acme Inc" />
+            </Field>
+          </div>
+
+          {/* Subject line */}
+          <div style={{ marginBottom: 10 }}>
+            <div style={{ fontSize: 11, fontWeight: 700, color: brand.textFaint, marginBottom: 4 }}>SUBJECT LINE</div>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+              <div style={{ flex: 1, fontSize: 13, color: brand.text, background: brand.bgCreamWarm, padding: '8px 12px', borderRadius: 8, fontStyle: 'italic' }}>{subject}</div>
+              <button
+                onClick={() => copy(subject, setCopiedSubject)}
+                style={{ background: copiedSubject ? brand.primaryLight : brand.bgAlt, border: 'none', borderRadius: 8, padding: '8px 12px', cursor: 'pointer', fontSize: 12, fontWeight: 700, color: copiedSubject ? brand.primary : brand.textMuted, whiteSpace: 'nowrap' }}
+              >
+                {copiedSubject ? '✓ Copied' : 'Copy'}
+              </button>
+            </div>
+          </div>
+
+          {/* Message */}
+          <div>
+            <div style={{ fontSize: 11, fontWeight: 700, color: brand.textFaint, marginBottom: 4 }}>MESSAGE</div>
+            <div style={{ position: 'relative' }}>
+              <pre style={{ background: brand.bgCreamWarm, borderRadius: 10, padding: '14px 16px', fontSize: 13, lineHeight: 1.65, color: brand.text, whiteSpace: 'pre-wrap', wordBreak: 'break-word', margin: 0, fontFamily: f, maxHeight: 220, overflowY: 'auto' }}>
+                {msg}
+              </pre>
+            </div>
+            <div style={{ marginTop: 10 }}>
+              <Btn variant="accent" onClick={() => copy(msg, setCopiedMsg)}>
+                <Icon name={copiedMsg ? 'check' : 'link'} size={14} color="#fff" /> {copiedMsg ? 'Copied!' : 'Copy message'}
+              </Btn>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 /* ---------------- Live Sourcing ---------------- */
 
 function Sourcing({
   pipeline,
   onToggle,
+  onOpenModal,
   query,
   setQuery,
   active,
@@ -166,6 +446,7 @@ function Sourcing({
 }: {
   pipeline: SavedCandidate[];
   onToggle: (c: Candidate) => void;
+  onOpenModal: (c: Candidate) => void;
   query: SearchQuery;
   setQuery: (q: SearchQuery) => void;
   active: SourceId[];
@@ -181,6 +462,9 @@ function Sourcing({
   const [sortBy, setSortBy] = useState<'match' | 'name'>('match');
   const [sourceFilter, setSourceFilter] = useState<SourceId | 'all'>('all');
   const [emailOnly, setEmailOnly] = useState(false);
+  const [savedSearches, setSavedSearches] = useState<SavedSearch[]>(() => loadSavedSearches());
+  const [saveDialog, setSaveDialog] = useState(false);
+  const [saveName, setSaveName] = useState('');
 
   async function run(reset: boolean) {
     if (active.length === 0) {
@@ -223,40 +507,85 @@ function Sourcing({
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
-      <div style={card}>
-        <div style={{ fontSize: 12, fontWeight: 700, color: brand.textMuted, marginBottom: 10 }}>SOURCES</div>
-        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 18 }}>
-          {SOURCES.map((s) => {
-            const on = active.includes(s.meta.id);
-            return (
-              <button
-                key={s.meta.id}
-                onClick={() => toggleSource(s.meta.id)}
-                aria-pressed={on}
-                title={s.meta.blurb}
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 7,
-                  padding: '8px 12px',
-                  borderRadius: 999,
-                  border: `1.5px solid ${on ? sourceColor[s.meta.id] : brand.border}`,
-                  background: on ? sourceColor[s.meta.id] : 'transparent',
-                  color: on ? '#fff' : brand.textMuted,
-                  fontSize: 13,
-                  fontWeight: 700,
-                  cursor: 'pointer',
-                  fontFamily: f,
-                  minHeight: 40,
-                  transition: 'background 0.2s, color 0.2s, border-color 0.2s',
-                }}
-              >
-                {on && <Icon name="check" size={14} color="#fff" />}
-                {s.meta.label}
-              </button>
-            );
-          })}
+      <div style={card} className="sco-card">
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', flexWrap: 'wrap', gap: 8, marginBottom: 14 }}>
+          <SectionLabel>Choose your sources</SectionLabel>
+          <span style={{ fontSize: 12, color: brand.textFaint }}>Tap to toggle · pick one or many</span>
         </div>
+
+        {SOURCE_GROUPS.map((group, gi) => (
+          <div key={group.label} style={{ marginBottom: gi === SOURCE_GROUPS.length - 1 ? 18 : 16 }}>
+            <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 8, flexWrap: 'wrap' }}>
+              <span style={{ fontSize: 13, fontWeight: 800, color: brand.text }}>{group.label}</span>
+              <span style={{ fontSize: 12, color: brand.textFaint }}>{group.note}</span>
+            </div>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              {group.ids.map((id) => {
+                const s = SOURCES.find((x) => x.meta.id === id)!;
+                const on = active.includes(id);
+                return (
+                  <button
+                    key={id}
+                    onClick={() => toggleSource(id)}
+                    aria-pressed={on}
+                    title={s.meta.blurb}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 7,
+                      padding: '8px 13px',
+                      borderRadius: 999,
+                      border: `1.5px solid ${on ? sourceColor[id] : brand.border}`,
+                      background: on ? sourceColor[id] : brand.surface,
+                      color: on ? '#fff' : brand.textMuted,
+                      fontSize: 13,
+                      fontWeight: 700,
+                      cursor: 'pointer',
+                      fontFamily: f,
+                      minHeight: 40,
+                      boxShadow: on ? '0 2px 8px rgba(28,51,41,0.18)' : 'none',
+                      transition: 'background 0.2s, color 0.2s, border-color 0.2s, box-shadow 0.2s',
+                    }}
+                  >
+                    {on && <Icon name="check" size={14} color="#fff" />}
+                    {s.meta.label}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        ))}
+
+        <div style={{ fontSize: 12.5, color: brand.textMid, background: brand.bgCreamWarm, border: `1px solid ${brand.border}`, borderRadius: 10, padding: '10px 12px', marginBottom: 18, lineHeight: 1.5 }}>
+          <strong style={{ color: brand.text }}>Hiring a non-technical role?</strong> Use <strong>Reddit</strong> for live "available for hire" posts across design, marketing, writing and ops, then open the <strong>X-Ray Builder</strong> tab to reach LinkedIn profiles for any role.
+        </div>
+
+        {/* Saved searches */}
+        {savedSearches.length > 0 && (
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 14 }}>
+            <span style={{ fontSize: 11, fontWeight: 700, color: brand.textFaint, alignSelf: 'center', marginRight: 4 }}>SAVED:</span>
+            {savedSearches.map((ss) => (
+              <div key={ss.id} style={{ display: 'flex', alignItems: 'center', gap: 0 }}>
+                <button
+                  onClick={() => {
+                    setQuery(ss.query as unknown as SearchQuery);
+                    setActive(ss.sources as SourceId[]);
+                  }}
+                  style={{ background: brand.primaryLight, color: brand.primary, border: 'none', borderRadius: '999px 0 0 999px', padding: '5px 10px', fontSize: 12, fontWeight: 700, cursor: 'pointer', fontFamily: f }}
+                >
+                  {ss.name}
+                </button>
+                <button
+                  onClick={() => setSavedSearches(deleteSavedSearch(ss.id))}
+                  aria-label={`Delete ${ss.name}`}
+                  style={{ background: brand.primaryLight, color: brand.primary, border: 'none', borderRadius: '0 999px 999px 0', padding: '5px 8px', fontSize: 12, cursor: 'pointer', fontFamily: f, borderLeft: `1px solid ${brand.border}` }}
+                >
+                  ×
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
 
         <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', marginBottom: 14 }}>
           <Field label="Keywords / skills">
@@ -268,6 +597,9 @@ function Sourcing({
           <Field label="Technology / tag">
             <input id="technology-/-tag" style={inputStyle} value={query.tech} onChange={(e) => setQuery({ ...query, tech: e.target.value })} placeholder="TypeScript" />
           </Field>
+          <Field label="GitHub org / company">
+            <input id="github-org" style={inputStyle} value={query.orgName} onChange={(e) => setQuery({ ...query, orgName: e.target.value })} placeholder="stripe" title="Search employees of a specific GitHub org" />
+          </Field>
           <Field label="Min signal">
             <input id="min-signal" style={inputStyle} type="number" value={query.minSignal} onChange={(e) => setQuery({ ...query, minSignal: +e.target.value })} title="Min followers (GitHub) — ignored by sources without a follower metric" />
           </Field>
@@ -278,6 +610,42 @@ function Sourcing({
             {loading ? <Spinner /> : <Icon name="search" color="#fff" />}
             {loading ? 'Sourcing live…' : 'Source candidates'}
           </Btn>
+          {!saveDialog && (
+            <Btn variant="ghost" onClick={() => { setSaveName(''); setSaveDialog(true); }} disabled={loading}>
+              <Icon name="bookmark" size={14} color={brand.primary} /> Save search
+            </Btn>
+          )}
+          {saveDialog && (
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+              <input
+                autoFocus
+                style={{ ...inputStyle, minWidth: 160, padding: '8px 12px' }}
+                placeholder="Search name…"
+                value={saveName}
+                onChange={(e) => setSaveName(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && saveName.trim()) {
+                    setSavedSearches(saveSearch(saveName.trim(), query as unknown as Record<string, unknown>, active));
+                    setSaveDialog(false);
+                  }
+                  if (e.key === 'Escape') setSaveDialog(false);
+                }}
+              />
+              <Btn
+                variant="primary"
+                onClick={() => {
+                  if (saveName.trim()) {
+                    setSavedSearches(saveSearch(saveName.trim(), query as unknown as Record<string, unknown>, active));
+                    setSaveDialog(false);
+                  }
+                }}
+                disabled={!saveName.trim()}
+              >
+                Save
+              </Btn>
+              <Btn variant="ghost" onClick={() => setSaveDialog(false)}>Cancel</Btn>
+            </div>
+          )}
           {results.length > 0 && <span style={{ color: brand.textFaint, fontSize: 13 }}>{view.length} shown · {results.length} sourced</span>}
         </div>
 
@@ -330,7 +698,7 @@ function Sourcing({
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))', gap: 16 }}>
         {view.map((p) => (
-          <CandidateCard key={p.uid} c={p} saved={isSaved(pipeline, p.uid)} onToggle={onToggle} />
+          <CandidateCard key={p.uid} c={p} saved={isSaved(pipeline, p.uid)} onToggle={onToggle} onOpenModal={onOpenModal} />
         ))}
       </div>
 
@@ -343,8 +711,14 @@ function Sourcing({
       )}
 
       {!loading && results.length === 0 && !err && (
-        <div style={{ ...card, textAlign: 'center', color: brand.textFaint }}>
-          Pick sources, enter criteria, and pull real live candidates — free, no login, no keys.
+        <div className="sco-card" style={{ ...card, textAlign: 'center', padding: '44px 24px', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10 }}>
+          <div style={{ width: 52, height: 52, borderRadius: 14, background: brand.primaryLight, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            <Icon name="search" size={24} color={brand.primary} />
+          </div>
+          <div style={{ fontFamily: serif, fontSize: 22, color: brand.text }}>Ready when you are</div>
+          <div style={{ fontSize: 14, color: brand.textFaint, maxWidth: '46ch', lineHeight: 1.55 }}>
+            Pick your sources above, add a keyword or skill, and hit <strong style={{ color: brand.textMid }}>Source candidates</strong> to pull real, live profiles.
+          </div>
         </div>
       )}
     </div>
@@ -360,7 +734,7 @@ function ContactRow({ c }: { c: Candidate }) {
   return (
     <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
       {items.map((it) => (
-        <a key={it.href} href={it.href} target="_blank" rel="noreferrer" style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 12, color: brand.accentDark, fontWeight: 600, textDecoration: 'none', maxWidth: '100%' }}>
+        <a key={it.href} href={it.href} target="_blank" rel="noreferrer" className="sco-link-underline" style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 12, color: brand.accentDark, fontWeight: 600, textDecoration: 'none', maxWidth: '100%' }}>
           <Icon name={it.icon} size={13} color={brand.accentDark} />
           <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{it.label}</span>
         </a>
@@ -369,9 +743,9 @@ function ContactRow({ c }: { c: Candidate }) {
   );
 }
 
-function CandidateCard({ c, saved, onToggle }: { c: Candidate; saved: boolean; onToggle: (c: Candidate) => void }) {
+function CandidateCard({ c, saved, onToggle, onOpenModal }: { c: Candidate; saved: boolean; onToggle: (c: Candidate) => void; onOpenModal: (c: Candidate) => void }) {
   return (
-    <div style={{ ...card, display: 'flex', flexDirection: 'column', gap: 12 }}>
+    <div className="sco-card sco-card-hover sco-rise" style={{ ...card, display: 'flex', flexDirection: 'column', gap: 12 }}>
       <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
         {c.avatar ? (
           <img src={c.avatar} alt="" width={52} height={52} loading="lazy" style={{ borderRadius: 12, border: `1px solid ${brand.border}` }} />
@@ -410,9 +784,9 @@ function CandidateCard({ c, saved, onToggle }: { c: Candidate; saved: boolean; o
 
       <ContactRow c={c} />
 
-      <div style={{ display: 'flex', gap: 8, marginTop: 'auto' }}>
-        <Btn href={c.url} variant="ghost" ariaLabel={`View ${c.name} profile`}>
-          <Icon name="external" size={14} color={brand.primary} /> Profile
+      <div style={{ display: 'flex', gap: 8, marginTop: 'auto', flexWrap: 'wrap' }}>
+        <Btn onClick={() => onOpenModal(c)} variant="ghost" ariaLabel={`Expand ${c.name}`}>
+          <Icon name="external" size={14} color={brand.primary} /> Expand
         </Btn>
         <Btn onClick={() => onToggle(c)} variant={saved ? 'accent' : 'primary'} ariaLabel={saved ? `Remove ${c.name}` : `Save ${c.name}`}>
           <Icon name={saved ? 'check' : 'bookmark'} size={14} color="#fff" /> {saved ? 'Saved' : 'Save'}
@@ -446,7 +820,7 @@ function XRay() {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
-      <div style={card}>
+      <div style={card} className="sco-card">
         <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap' }}>
           <Field label="Titles (comma-separated)">
             <input id="titles-(comma-separated)" style={inputStyle} value={titlesRaw} onChange={(e) => setTitlesRaw(e.target.value)} />
@@ -464,8 +838,8 @@ function XRay() {
         </label>
       </div>
 
-      <div style={card}>
-        <div style={{ fontSize: 12, fontWeight: 700, color: brand.textMuted, marginBottom: 8 }}>BOOLEAN STRING</div>
+      <div style={card} className="sco-card">
+        <div style={{ marginBottom: 8 }}><SectionLabel>Boolean string</SectionLabel></div>
         <div style={{ background: brand.primary, color: brand.primaryLight, padding: 14, borderRadius: 10, fontFamily: 'monospace', fontSize: 13, lineHeight: 1.5, wordBreak: 'break-word' }}>
           {boolean}
         </div>
@@ -485,7 +859,7 @@ function XRay() {
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 14 }}>
         {links.map((l) => (
-          <div key={l.label} style={{ ...card, display: 'flex', flexDirection: 'column', gap: 10 }}>
+          <div key={l.label} className="sco-card sco-card-hover" style={{ ...card, display: 'flex', flexDirection: 'column', gap: 10 }}>
             <div style={{ fontWeight: 800, color: brand.text, fontSize: 15 }}>{l.label}</div>
             <div style={{ fontSize: 13, color: brand.textFaint, flex: 1 }}>{l.note}</div>
             <Btn href={l.url} variant="primary">
@@ -520,7 +894,7 @@ function Channels() {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
-      <div style={card}>
+      <div style={card} className="sco-card">
         <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', marginBottom: 16 }}>
           <Field label="Role family">
             <select id="role-family" style={inputStyle} value={family} onChange={(e) => setFamily(e.target.value as RoleFamily)}>
@@ -547,7 +921,7 @@ function Channels() {
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
         {ranked.map((c, i) => (
-          <div key={c.id} style={{ ...card, display: 'flex', gap: 16, alignItems: 'center' }}>
+          <div key={c.id} className="sco-card sco-card-hover" style={{ ...card, display: 'flex', gap: 16, alignItems: 'center' }}>
             <div style={{ fontSize: 22, fontWeight: 800, color: brand.textFaint, width: 28 }}>{i + 1}</div>
             <div style={{ flex: 1 }}>
               <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
@@ -589,8 +963,14 @@ function Pipeline({
 }) {
   if (list.length === 0)
     return (
-      <div style={{ ...card, textAlign: 'center', color: brand.textFaint }}>
-        No saved candidates yet. Save profiles from the Live Sourcing tab.
+      <div className="sco-card" style={{ ...card, textAlign: 'center', padding: '44px 24px', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10 }}>
+        <div style={{ width: 52, height: 52, borderRadius: 14, background: brand.primaryLight, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <Icon name="bookmark" size={22} color={brand.primary} />
+        </div>
+        <div style={{ fontFamily: serif, fontSize: 22, color: brand.text }}>Your pipeline is empty</div>
+        <div style={{ fontSize: 14, color: brand.textFaint, maxWidth: '46ch', lineHeight: 1.55 }}>
+          Head to <strong style={{ color: brand.textMid }}>Live Sourcing</strong>, find some candidates, and hit Save. They will show up here, sorted by stage.
+        </div>
       </div>
     );
 
@@ -618,7 +998,7 @@ function Pipeline({
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
               {inStage.map((p) => (
-                <div key={p.uid} style={{ ...card, display: 'flex', flexDirection: 'column', gap: 10 }}>
+                <div key={p.uid} className="sco-card sco-card-hover" style={{ ...card, display: 'flex', flexDirection: 'column', gap: 10 }}>
                   <div style={{ display: 'flex', gap: 14, alignItems: 'center', flexWrap: 'wrap', rowGap: 10 }}>
                     {p.avatar ? (
                       <img src={p.avatar} alt="" width={44} height={44} loading="lazy" style={{ borderRadius: 10, flexShrink: 0 }} />
@@ -669,8 +1049,11 @@ export default function App() {
   const [pipeline, setPipeline] = useState<SavedCandidate[]>([]);
 
   // Lifted sourcing state so results survive tab switches.
-  const [query, setQuery] = useState<SearchQuery>({ keywords: 'react', location: '', tech: 'TypeScript', minSignal: 20, page: 1 });
+  const [query, setQuery] = useState<SearchQuery>({ keywords: 'react', location: '', tech: 'TypeScript', orgName: '', minSignal: 20, page: 1 });
   const [active, setActive] = useState<SourceId[]>(['github', 'stackoverflow']);
+  const [modalCandidate, setModalCandidate] = useState<Candidate | null>(null);
+  const [outreach, setOutreach] = useState<OutreachSettings>({ senderName: '', role: '', company: '' });
+  const onOpenModal = useCallback((c: Candidate) => setModalCandidate(c), []);
   const [results, setResults] = useState<Candidate[]>([]);
   const [outcomes, setOutcomes] = useState<SourceOutcome[]>([]);
 
@@ -687,46 +1070,93 @@ export default function App() {
 
   return (
     <div style={{ minHeight: '100vh', background: brand.bg, fontFamily: f, color: brand.text }}>
-      <header style={{ background: brand.primary, color: '#fff', padding: '28px 24px', borderBottom: `4px solid ${brand.accent}` }}>
+      {modalCandidate && (
+        <CandidateModal
+          c={modalCandidate}
+          saved={isSaved(pipeline, modalCandidate.uid)}
+          onToggle={onToggle}
+          onClose={() => setModalCandidate(null)}
+          outreach={outreach}
+          setOutreach={setOutreach}
+        />
+      )}
+      <header
+        style={{
+          color: '#fff',
+          padding: '44px 24px 40px',
+          borderBottom: `4px solid ${brand.accent}`,
+          background: `radial-gradient(120% 140% at 0% 0%, ${brand.primaryMid} 0%, ${brand.primary} 55%, #14261E 100%)`,
+        }}
+      >
         <div style={{ maxWidth: 1100, margin: '0 auto' }}>
-          <div style={{ fontSize: 26, fontWeight: 800, letterSpacing: -0.5 }}>Sourcing Channel Optimizer</div>
-          <div style={{ color: brand.primaryLight, fontSize: 14, marginTop: 4 }}>
-            4 live talent sources · contact enrichment · X-ray builder · channel ROI — 100% free, real data, no keys.
+          <SectionLabel color={brand.accentLight}>Talent sourcing toolkit</SectionLabel>
+          <h1 style={{ fontFamily: serif, fontSize: 'clamp(34px, 5vw, 52px)', lineHeight: 1.02, margin: '10px 0 0', fontWeight: 400, letterSpacing: '-0.01em' }}>
+            Sourcing Channel Optimizer
+          </h1>
+          <p style={{ color: brand.primaryLight, fontSize: 16, lineHeight: 1.55, marginTop: 14, maxWidth: '60ch' }}>
+            Find candidates for any role, technical or not. Pull live profiles, build search strings, compare channels, and track your shortlist. Completely free, no logins or API keys.
+          </p>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 20 }}>
+            {['Live sourcing', 'Outreach generator', 'X-Ray builder', 'Channel ROI', 'Saved pipeline'].map((p) => (
+              <span
+                key={p}
+                style={{
+                  fontFamily: mono,
+                  fontSize: 11.5,
+                  letterSpacing: '0.06em',
+                  textTransform: 'uppercase',
+                  color: brand.primaryLight,
+                  background: 'rgba(255,255,255,0.08)',
+                  border: '1px solid rgba(255,255,255,0.16)',
+                  borderRadius: 999,
+                  padding: '5px 11px',
+                }}
+              >
+                {p}
+              </span>
+            ))}
           </div>
         </div>
       </header>
 
-      <nav style={{ background: brand.surface, borderBottom: `1px solid ${brand.border}`, position: 'sticky', top: 0, zIndex: 10 }}>
+      <nav style={{ background: brand.surface, borderBottom: `1px solid ${brand.border}`, position: 'sticky', top: 0, zIndex: 10, boxShadow: '0 1px 0 rgba(24,18,14,0.02)' }}>
         <div style={{ maxWidth: 1100, margin: '0 auto', display: 'flex', gap: 4, padding: '0 24px', overflowX: 'auto' }}>
-          {tabs.map((t) => (
-            <button
-              key={t.id}
-              onClick={() => setTab(t.id)}
-              aria-current={tab === t.id ? 'page' : undefined}
-              style={{
-                background: 'transparent',
-                border: 'none',
-                borderBottom: tab === t.id ? `3px solid ${brand.accent}` : '3px solid transparent',
-                color: tab === t.id ? brand.primary : brand.textFaint,
-                fontWeight: 700,
-                fontSize: 14,
-                padding: '16px 14px',
-                cursor: 'pointer',
-                fontFamily: f,
-                whiteSpace: 'nowrap',
-              }}
-            >
-              {t.label}
-            </button>
-          ))}
+          {tabs.map((t) => {
+            const on = tab === t.id;
+            return (
+              <button
+                key={t.id}
+                onClick={() => setTab(t.id)}
+                aria-current={on ? 'page' : undefined}
+                className={on ? undefined : 'sco-tab'}
+                style={{
+                  background: 'transparent',
+                  border: 'none',
+                  borderBottom: on ? `3px solid ${brand.accent}` : '3px solid transparent',
+                  color: on ? brand.primary : brand.textFaint,
+                  fontWeight: 700,
+                  fontSize: 14,
+                  padding: '16px 14px',
+                  cursor: 'pointer',
+                  fontFamily: f,
+                  whiteSpace: 'nowrap',
+                  transition: 'color 0.18s ease',
+                }}
+              >
+                {t.label}
+              </button>
+            );
+          })}
         </div>
       </nav>
 
-      <main style={{ maxWidth: 1100, margin: '0 auto', padding: 24 }}>
+      <main key={tab} style={{ maxWidth: 1100, margin: '0 auto', padding: 24, display: 'flex', flexDirection: 'column', gap: 20 }}>
+        <TabIntro title={tabs.find((t) => t.id === tab)!.label} guide={TAB_GUIDE[tab]} />
         {tab === 'sourcing' && (
           <Sourcing
             pipeline={pipeline}
             onToggle={onToggle}
+            onOpenModal={onOpenModal}
             query={query}
             setQuery={setQuery}
             active={active}
@@ -742,8 +1172,8 @@ export default function App() {
         {tab === 'pipeline' && <Pipeline list={pipeline} onToggle={onToggle} onUpdate={onUpdate} />}
       </main>
 
-      <footer style={{ textAlign: 'center', padding: 24, color: brand.textFaint, fontSize: 12 }}>
-        Free sources: GitHub · Stack Overflow · Hacker News · Dev.to · Google X-ray · localStorage. No keys, no backend.
+      <footer style={{ textAlign: 'center', padding: '28px 24px 36px', color: brand.textFaint, fontSize: 12, lineHeight: 1.6 }}>
+        Free sources: GitHub · Stack Overflow · Hacker News · Dev.to · Reddit · Google X-Ray. Saved locally in your browser — no keys, no backend.
       </footer>
     </div>
   );

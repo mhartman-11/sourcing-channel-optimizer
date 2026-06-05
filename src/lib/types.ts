@@ -1,7 +1,7 @@
 // Unified, source-agnostic candidate model. Every live source normalizes to this.
 // 100% free, keyless, in-browser. No backend.
 
-export type SourceId = 'github' | 'stackoverflow' | 'hackernews' | 'devto';
+export type SourceId = 'github' | 'stackoverflow' | 'hackernews' | 'devto' | 'reddit';
 
 export interface SourceMeta {
   id: SourceId;
@@ -15,6 +15,7 @@ export interface SearchQuery {
   keywords: string;   // role / skill keywords, e.g. "react typescript"
   location: string;   // free text, e.g. "Berlin"
   tech: string;       // primary language / tag, e.g. "TypeScript"
+  orgName: string;    // GitHub org/company filter, e.g. "stripe"
   minSignal: number;  // source-specific floor (followers / reputation / etc.)
   page: number;       // 1-based, for load-more
 }

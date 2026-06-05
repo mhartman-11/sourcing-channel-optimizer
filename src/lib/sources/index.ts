@@ -4,8 +4,9 @@ import github from './github';
 import stackoverflow from './stackoverflow';
 import hackernews from './hackernews';
 import devto from './devto';
+import reddit from './reddit';
 
-export const SOURCES: SourceModule[] = [github, stackoverflow, hackernews, devto];
+export const SOURCES: SourceModule[] = [github, stackoverflow, hackernews, devto, reddit];
 export const SOURCE_BY_ID: Record<SourceId, SourceModule> = Object.fromEntries(
   SOURCES.map((s) => [s.meta.id, s]),
 ) as Record<SourceId, SourceModule>;

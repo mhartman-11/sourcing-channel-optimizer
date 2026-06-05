@@ -123,5 +123,5 @@ function decodeHtml(s: string): string {
 
 export default defineConfig({
   plugins: [react(), searchMiddleware()],
-  server: { port: 5174 },
+  server: { port: process.env.PORT ? Number(process.env.PORT) : 5174 },
 })
